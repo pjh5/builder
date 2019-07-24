@@ -115,51 +115,48 @@ LIBTORCH_VARIANTS=(
     static-with-deps
     static-without-deps
 )
+# Need to define VARIANT
 
 # Build libtorch packages
-if [[ -n "$BUILD_PYTHONLESS" ]]; then
-    for VARIANT in ${LIBTORCH_VARIANTS[@]}; do
-        # Now build pythonless libtorch
-        # Note - just use whichever python we happen to be on
-        python setup.py clean
+# Note - just use whichever python we happen to be on
+python setup.py clean
 
-        if [[ $VARIANT = *"static"* ]]; then
-            STATIC_CMAKE_FLAG="-DTORCH_STATIC=1"
-        fi
-
-        mkdir -p build
-        pushd build
-        echo "Calling tools/build_libtorch.py at $(date)"
-        time CMAKE_ARGS=${CMAKE_ARGS[@]} \
-             EXTRA_CAFFE2_CMAKE_FLAGS="${EXTRA_CAFFE2_CMAKE_FLAGS[@]} $STATIC_CMAKE_FLAG" \
-             python ../tools/build_libtorch.py
-        echo "Finished tools/build_libtorch.py at $(date)"
-        popd
-
-        mkdir -p libtorch/{lib,bin,include,share}
-        cp -r build/build/lib libtorch/
-
-        # for now, the headers for the libtorch package will just be copied in
-        # from one of the wheels
-        ANY_WHEEL=$(ls /tmp/$WHEELHOUSE_DIR/torch*.whl | head -n1)
-        unzip -d any_wheel $ANY_WHEEL
-        if [[ -d any_wheel/torch/include ]]; then
-            cp -r any_wheel/torch/include libtorch/
-        else
-            cp -r any_wheel/torch/lib/include libtorch/
-        fi
-        cp -r any_wheel/torch/share/cmake libtorch/share/
-        rm -rf any_wheel
-
-        echo $PYTORCH_BUILD_VERSION > libtorch/build-version
-        echo "$(pushd $pytorch_rootdir && git rev-parse HEAD)" > libtorch/build-hash
-
-        mkdir -p /tmp/$LIBTORCH_HOUSE_DIR
-        zip -rq /tmp/$LIBTORCH_HOUSE_DIR/libtorch-$VARIANT-$PYTORCH_BUILD_VERSION.zip libtorch
-        cp /tmp/$LIBTORCH_HOUSE_DIR/libtorch-$VARIANT-$PYTORCH_BUILD_VERSION.zip \
-           /tmp/$LIBTORCH_HOUSE_DIR/libtorch-$VARIANT-latest.zip
-    done
+if [[ $VARIANT = *"static"* ]]; then
+    STATIC_CMAKE_FLAG="-DTORCH_STATIC=1"
 fi
+
+mkdir -p build
+pushd build
+echo "Calling tools/build_libtorch.py at $(date)"
+time CMAKE_ARGS=${CMAKE_ARGS[@]} \
+     EXTRA_CAFFE2_CMAKE_FLAGS="${EXTRA_CAFFE2_CMAKE_FLAGS[@]} $STATIC_CMAKE_FLAG" \
+     python ../tools/build_libtorch.py
+echo "Finished tools/build_libtorch.py at $(date)"
+popd
+
+mkdir -p libtorch/{lib,bin,include,share}
+cp -r build/build/lib libtorch/
+
+# for now, the headers for the libtorch package will just be copied in
+# from one of the wheels
+ANY_WHEEL=$(ls /tmp/$WHEELHOUSE_DIR/torch*.whl | head -n1)
+unzip -d any_wheel $ANY_WHEEL
+if [[ -d any_wheel/torch/include ]]; then
+    cp -r any_wheel/torch/include libtorch/
+else
+    cp -r any_wheel/torch/lib/include libtorch/
+fi
+cp -r any_wheel/torch/share/cmake libtorch/share/
+rm -rf any_wheel
+
+echo $PYTORCH_BUILD_VERSION > libtorch/build-version
+echo "$(pushd $pytorch_rootdir && git rev-parse HEAD)" > libtorch/build-hash
+
+mkdir -p /tmp/$LIBTORCH_HOUSE_DIR
+zip -rq /tmp/$LIBTORCH_HOUSE_DIR/libtorch-$VARIANT-$PYTORCH_BUILD_VERSION.zip libtorch
+cp /tmp/$LIBTORCH_HOUSE_DIR/libtorch-$VARIANT-$PYTORCH_BUILD_VERSION.zip \
+   /tmp/$LIBTORCH_HOUSE_DIR/libtorch-$VARIANT-latest.zip
+done
 
 popd
 
@@ -197,25 +194,14 @@ make_wheel_record() {
 }
 
 echo 'Built these wheels:'
-ls /tmp/$WHEELHOUSE_DIR
-mkdir -p "/$WHEELHOUSE_DIR"
-mv /tmp/$WHEELHOUSE_DIR/torch*linux*.whl /$WHEELHOUSE_DIR/
-if [[ -n "$BUILD_PYTHONLESS" ]]; then
-    mkdir -p /$LIBTORCH_HOUSE_DIR
-    mv /tmp/$LIBTORCH_HOUSE_DIR/*.zip /$LIBTORCH_HOUSE_DIR
-    rm -rf /tmp/$LIBTORCH_HOUSE_DIR
-fi
-rm -rf /tmp/$WHEELHOUSE_DIR
-rm -rf /tmp_dir
+mkdir -p /$LIBTORCH_HOUSE_DIR
+mv /tmp/$LIBTORCH_HOUSE_DIR/*.zip /$LIBTORCH_HOUSE_DIR
+rm -rf /tmp/$LIBTORCH_HOUSE_DIR
+
 mkdir /tmp_dir
 pushd /tmp_dir
 
-for pkg in /$WHEELHOUSE_DIR/torch*linux*.whl /$LIBTORCH_HOUSE_DIR/libtorch*.zip; do
-
-    # if the glob didn't match anything
-    if [[ ! -e $pkg ]]; then
-        continue
-    fi
+for pkg in /$LIBTORCH_HOUSE_DIR/libtorch*.zip; do
 
     rm -rf tmp
     mkdir -p tmp
@@ -308,52 +294,11 @@ done
 # Copy wheels to host machine for persistence before testing
 if [[ -n "$PYTORCH_FINAL_PACKAGE_DIR" ]]; then
     mkdir -p "$PYTORCH_FINAL_PACKAGE_DIR" || true
-    if [[ -n "$BUILD_PYTHONLESS" ]]; then
-        cp /$LIBTORCH_HOUSE_DIR/libtorch*.zip "$PYTORCH_FINAL_PACKAGE_DIR"
-    else
-        cp /$WHEELHOUSE_DIR/torch*.whl "$PYTORCH_FINAL_PACKAGE_DIR"
-    fi
+    cp /$LIBTORCH_HOUSE_DIR/libtorch*.zip "$PYTORCH_FINAL_PACKAGE_DIR"
 fi
 
 # remove stuff before testing
 rm -rf /opt/rh
 if ls /usr/local/cuda* >/dev/null 2>&1; then
     rm -rf /usr/local/cuda*
-fi
-
-
-# Test that all the wheels work
-if [[ -z "$BUILD_PYTHONLESS" ]]; then
-  export OMP_NUM_THREADS=4 # on NUMA machines this takes too long
-  pushd $pytorch_rootdir/test
-  for (( i=0; i<"${#DESIRED_PYTHON[@]}"; i++ )); do
-    # This assumes that there is a 1:1 correspondence between python versions
-    # and wheels, and that the python version is in the name of the wheel,
-    # and that the python version matches the regex "cp\d\d-cp\d\dmu?"
-    pydir="${python_installations[i]}"
-    curpip="${pydir}/bin/pip"
-    curpy="${pydir}/bin/python"
-    pyver="${DESIRED_PYTHON[i]}"
-    pyver_short="${pyver:2:1}.${pyver:3:1}"
-
-    # Install the wheel for this Python version
-    "$curpip" uninstall -y "$TORCH_PACKAGE_NAME"
-    "$curpip" install "$TORCH_PACKAGE_NAME" --no-index -f /$WHEELHOUSE_DIR --no-dependencies -v
-
-    # Print info on the libraries installed in this wheel
-    installed_libraries=($(find "$pydir/lib/python$pyver_short/site-packages/torch/" -name '*.so*'))
-    echo "The wheel installed all of the libraries: ${installed_libraries[@]}"
-    for installed_lib in "${installed_libraries[@]}"; do
-        ldd "$installed_lib"
-    done
-
-    # Run the tests
-    echo "$(date) :: Running tests"
-    pushd "$pytorch_rootdir"
-    LD_LIBRARY_PATH=/usr/local/nvidia/lib64 \
-            PYCMD="$curpy" \
-            "${SOURCE_DIR}/../run_tests.sh" 'manywheel' "$pyver_short" "$DESIRED_CUDA"
-    popd
-    echo "$(date) :: Finished tests"
-  done
 fi
